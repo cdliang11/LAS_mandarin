@@ -1,0 +1,24 @@
+data:
+    collate_fn:
+        feature_conf:
+            feature_type: 'fbank'
+            mel_bins: 80
+            frame_shift: 10
+            frame_length: 25
+            using_pitch: False
+        speed_perturb: True
+        spec_aug: true
+        spec_aug_conf:
+            warp_for_time: False
+            num_t_mask: 2
+            num_f_mask: 2
+            max_t: 50
+            max_f: 15 # 10
+            max_w: 80
+    dataset:
+        max_length: 40960
+        min_length: 0
+        dynamic_batch: False
+        batch_size: 32
+        max_frames_in_batch: 8000
+    
