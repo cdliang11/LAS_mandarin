@@ -24,7 +24,7 @@ model=results/${corpus}
 resume=
 lm_resume=
 
-save_dir=results/aishell/1109_mlp_nospeed
+save_dir=results/aishell/1108_mlp
 
 # path to save preprocessed data
 # Select the downloaded data
@@ -122,6 +122,19 @@ if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
             --vocab ${dict} \
             --test_iter 99 \
             --cmvn_file ${data}/train/global_cmvn
+fi 
+
+export_model=${save_dir}/iter99.pth 
+if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
+    echo "++++++ export model ++++++"
+    python ${SEE_ROOT}/src/export_jit.py \
+            --conf_path ${conf} \
+            --vocab ${dict} \
+            --cmvn_file ${data}/train/global_cmvn \
+            --checkpoint ${export_model} \
+            --output_file ${save_dir}/final.pt \
+            --output_quant_file ${save_dir}/final_quant.pt 
+
 fi 
 
 

@@ -20,11 +20,13 @@ Listen, attend and spell Model for Mandarin
 
 ## Results
 
-| Model                    | CER (%) | config   |
-| ------------------------ | ------- | -------- |
-| Listen, Attend and Spell | 8.98    | las.yaml |
+| Model                                 | wer (%) | config   |
+| ------------------------------------- | ------- | -------- |
+| Listen, Attend and Spell （no LM）[1] | 8.61    | las.yaml |
 
+Result Details:
 
+[1]. wer: 8.61, sub: 8.23, ins: 0.20, del: 0.17
 
 
 ## Reference：
@@ -32,3 +34,7 @@ Listen, attend and spell Model for Mandarin
 1. [Listen, Attend and Spell](https://arxiv.org/abs/1508.01211v2), W Chan et al.
 2. [wenet](https://github.com/wenet-e2e/wenet)
 3. [neural_sp](https://github.com/hirofumi0810/neural_sp)
+
+## TODO
+- [ ] wfst decode
+- [ ] export model

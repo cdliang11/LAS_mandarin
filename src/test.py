@@ -2,9 +2,7 @@
 # for test
 
 import copy
-from json import load
 import os
-from numpy import tri 
 import torch
 from data import AudioDataset, collatefunc
 from torch.utils.data import DataLoader
@@ -17,6 +15,10 @@ from utils import load_cmvn, GlobalCMVN
 
 from train import writelog
 from utils import make_pad_mask
+
+def check_file(file):
+    if os.path.isfile(file):
+        os.remove(file)
 
 def decode(vocab:dict, token_id:torch.Tensor):
     bs = token_id.shape[0] # batch_size
@@ -87,9 +89,15 @@ def main(args, conf):
 
     with torch.no_grad():
         st_time = time.time()
-        cur_log = os.path.join(save_dir, 'test.log')
-        if os.path.isfile(cur_log):
-            os.remove(cur_log)
+        cur_log = os.path.join(save_dir, 'test_.log')
+        pred_text = os.path.join(save_dir, 'pred_.txt')
+        label_text = os.path.join(save_dir, 'label_.txt')
+        check_file(cur_log)
+        check_file(pred_text)
+        check_file(label_text)
+        # if os.path.isfile(cur_log):
+        #     os.remove(cur_log)
+
         writelog(cur_log, "iter%d.pth"%test_iter)
         writelog(cur_log, '--------------------------------------------------------')
         cnt_uttr = 0
@@ -109,17 +117,22 @@ def main(args, conf):
             # print(preds_batch)
             # print(labels)
             # assert False
-            uttr_pred = decode(vocab, preds_batch)
-            uttr_label = decode(vocab, labels)
-            pred = list(uttr_pred[0])
-            label = list(uttr_label[0])
-            total_error += editdistance.eval(label, pred)
-            total_tokens += len(label)
+            uttr_pred = decode(vocab, preds_batch) # pred
+            uttr_label = decode(vocab, labels) # real
+            # pred = list(uttr_pred[0])
+            # label = list(uttr_label[0])
+            err = editdistance.eval(uttr_label[0], uttr_pred[0])
+            total_error += err
+            total_tokens += len(uttr_label[0])
             cnt_uttr += 1
-            writelog(cur_log, 'utt[%d], current wer: %f' % (cnt_uttr, total_error / (total_tokens+1e-20)))
-            writelog(cur_log, 'label: %s' % uttr_label)
-            writelog(cur_log, 'pred: %s'%uttr_pred)
-            # writelog(cur_log, '\n')
+            writelog(cur_log, 'utt[%d], current wer: %f' % (cnt_uttr, err / (len(uttr_label[0])+1e-20)))
+            writelog(cur_log, 'label: %s' % uttr_label[0])
+            writelog(cur_log, 'pred: %s'% uttr_pred[0])
+            writelog(cur_log, '')
+
+            # write text 
+            writelog(pred_text, '%s %s'%(uttrs[0],uttr_pred[0]))
+            writelog(label_text, '%s %s'%(uttrs[0],uttr_label[0]))
     
     writelog(cur_log, '----------------------------------------------------')
     writelog(cur_log, 'test iters: %d, total word: %d, error word: %d, wer: %f' %

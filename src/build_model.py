@@ -1,4 +1,5 @@
-from math import e
+from math import e, log
+from typing import ContextManager
 import numpy
 
 import torch
@@ -49,6 +50,8 @@ class LAS(nn.Module):
         self.decoder = Decoder(self.vocab)
 
         self.loss = LabelSmoothingCrossEntropy()
+        self.sos = 4233
+        self.eos = 4234
     
     def forward(self, x:torch.Tensor, x_mask:torch.Tensor, y:torch.Tensor, y_mask:torch.Tensor):
         if self.global_cmvn is not None:
@@ -86,6 +89,18 @@ class LAS(nn.Module):
         pred = self.decoder.beamsearch(eout)
 
         return pred
+    
+    @torch.jit.export
+    def sos_symbol(self) -> int:
+        return self.sos 
+    
+    @torch.jit.export 
+    def eos_symbol(self) -> int:
+        return self.eos 
+
+
+
+
 
 class Encoder(nn.Module):
     def __init__(self, feat_dim: int):
@@ -226,6 +241,62 @@ class Decoder(nn.Module):
 
         return logit
     
+    @torch.jit.export
+    def decode_ont_step(self, y,
+                        eout : torch.Tensor,
+                        context : torch.Tensor,
+                        h_att_lstm: torch.Tensor,
+                        c_att_lstm: torch.Tensor,
+                        init_h : torch.Tensor,
+                        init_c : torch.Tensor,
+                        att_h: torch.Tensor):
+        """
+        Args:
+            y (torch.int64)
+            _input (tuple): (context, h_att_lstm, c_att_lstm, init_hc)
+            eout (torch.Tensor) : 
+            att_h : w * h = self.w(eout)
+        Returns:
+            score : [b=1, 1, vocab_size]
+            (context, h_att_lstm, c_att_lstm, init_hc)
+        """
+        
+        # (context, h_att_lstm, c_att_lstm, init_hc) = _input
+
+        # one step
+        embed = self.embedding(y)
+        
+        body = torch.cat((embed, context), dim=1)
+        body = torch.unsqueeze(body, dim=1)
+        
+
+
+        y_att_lstm, (h_att_lstm, c_att_lstm) = self.att_lstm(body, (h_att_lstm, c_att_lstm))
+        state = self.v(y_att_lstm)
+        out = self.w_att_v * torch.tanh(state + att_h)
+        scalar = out.sum(dim=2).unsqueeze(dim=2)
+        scalar = torch.softmax(scalar, dim=1)
+
+        context = eout * scalar
+        context = context.sum(dim=1)
+
+        att_fea = torch.cat((y_att_lstm, context.unsqueeze(dim=1)), dim=2)
+        dout, init_hc = self.dec_lstm(att_fea, (init_h, init_c))
+        dout = torch.cat((att_fea, dout), dim=2)
+        dout = dout.permute(0,2,1).unsqueeze(dim=3)
+        logit = self.classification(dout)
+        logit = logit.squeeze(dim=3).permute(0,2,1)
+        logit = logit*0.8
+        score = torch.nn.functional.softmax(logit, dim=2)
+        # print(score)
+        # libtorch: cann't use numpy
+        # score[score < numpy.exp(-1e30)] = numpy.exp(-1e30) 
+        score = torch.log(score)
+        
+        return score, context, h_att_lstm, c_att_lstm, init_hc
+
+        
+
     def beamsearch(self, eout:torch.Tensor):
         beam_size = 10
         max_utt_len = eout.shape[1]
@@ -235,12 +306,15 @@ class Decoder(nn.Module):
         h_att_lstm = torch.zeros([1,1,self.proj_size], device=eout.device)
         c_att_lstm = torch.zeros([1,1,self.hidden_size], device=eout.device)
         context = torch.zeros([1, self.word_dim], device=eout.device)
-        init_hc = (torch.zeros([1,1,self.proj_size], device=eout.device),
-                    torch.zeros([1,1,self.hidden_size], device=eout.device))
+        # init_hc = (torch.zeros([1,1,self.proj_size], device=eout.device),
+        #             torch.zeros([1,1,self.hidden_size], device=eout.device))
+        # for libtorch
+        init_h = torch.zeros([1,1,self.proj_size], device=eout.device)
+        init_c = torch.zeros([1,1,self.hidden_size], device=eout.device)
 
         beams = [{'h_att_lstm': h_att_lstm,
                 'c_att_lstm': c_att_lstm,
-                'init_hc': init_hc,
+                'init_hc': (init_h, init_c),
                 'context': context,
                 'preds': [torch.full([1], 4233, dtype=torch.int64, device=eout.device)], # the first predict word is <s>
                 'scores': []}]
@@ -254,41 +328,20 @@ class Decoder(nn.Module):
                     continue
                 else:
                     y = b['preds'][-1]
-                    embed = self.embedding(y)
-
                     context = b['context']
                     h_att_lstm = b['h_att_lstm']
                     c_att_lstm = b['c_att_lstm']
-                    init_hc = b['init_hc']
+                    (init_h, init_c) = b['init_hc']
+                    
+                    score, context, h_att_lstm, c_att_lstm, init_hc = self.decode_ont_step(y,
+                                                                                        eout,
+                                                                                        context=context,
+                                                                                        h_att_lstm=h_att_lstm,
+                                                                                        c_att_lstm=c_att_lstm,
+                                                                                        init_h=init_h,
+                                                                                        init_c=init_c,
+                                                                                        att_h=att_h)
 
-                    body = torch.cat((embed, context), dim=1)
-                    body = torch.unsqueeze(body, dim=1)
-                    # print(embed.shape)
-                    # print(context.shape)
-                    # print(body.shape)
-                    y_att_lstm, (h_att_lstm, c_att_lstm) = self.att_lstm(body, (h_att_lstm, c_att_lstm))
-
-                    state = self.v(y_att_lstm)
-
-                    out = self.w_att_v * torch.tanh(state+att_h)
-                    scalar = out.sum(dim=2).unsqueeze(dim=2)
-
-                    scalar = torch.softmax(scalar, dim=1)
-
-                    context = eout * scalar
-                    context = context.sum(dim=1)
-
-                    att_fea = torch.cat((y_att_lstm, context.unsqueeze(dim=1)), dim=2)
-                    dout, init_hc = self.dec_lstm(att_fea, init_hc)
-                    dout = torch.cat((att_fea, dout), dim=2)
-                    dout = dout.permute(0,2,1).unsqueeze(dim=3)
-                    # print(dout.shape)
-                    logit = self.classification(dout)
-                    logit = logit.squeeze(dim=3).permute(0,2,1)
-                    logit = logit * 0.8
-                    score = torch.nn.functional.softmax(logit, dim=2)
-                    score[score < numpy.exp(-1e30)] = numpy.exp(-1e30)
-                    score = torch.log(score)
                     top_score, top_id = torch.topk(score, k=beam_size, dim=-1)
                     for j in range(beam_size):
                         b_branch = b.copy()
@@ -300,6 +353,8 @@ class Decoder(nn.Module):
                         b_branch['scores'] = b_branch['scores'] + [top_score[0,0,j].item()]
                         beams_updates.append(b_branch)
             beams = beams_updates
+            # print(beams)
+            # assert False
             beams = sorted(beams, key=lambda b : numpy.mean(b['scores']), reverse=True)
             beams = beams[:beam_size]
         b = beams[0]
