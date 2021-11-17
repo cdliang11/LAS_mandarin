@@ -4,7 +4,7 @@
 import copy
 import os
 import torch
-from data import AudioDataset, collatefunc
+from data import EOS, AudioDataset, collatefunc
 from torch.utils.data import DataLoader
 import build_model
 import editdistance
@@ -15,6 +15,7 @@ from utils import load_cmvn, GlobalCMVN
 
 from train import writelog
 from utils import make_pad_mask
+from tqdm import tqdm
 
 def check_file(file):
     if os.path.isfile(file):
@@ -29,9 +30,9 @@ def decode(vocab:dict, token_id:torch.Tensor):
         utt = []
         for j in range(ylen):
             idx = token_id[i][j].item()
-            if idx == 4234:
+            if idx == EOS:
                 break
-            if 3 <= idx <= 4232:
+            if 4 <= idx <= 4233:
                 utt.append(vocab[idx])
         utt = ''.join(utt)
         text.append(utt)
@@ -56,7 +57,7 @@ def main(args, conf):
 
     save_dir = args.save_dir # model path
     test_iter = args.test_iter
-    model = build_model.LAS(feat_dim=80, vocab=vocab_size, global_cmvn=global_cmvn)
+    model = build_model.LAS(feat_dim=80, vocab=vocab_size, global_cmvn=global_cmvn, is_wfst=True)
     info = torch.load(os.path.join(save_dir, "iter%d.pth"%test_iter), map_location=torch.device('cpu'))
     print(os.path.join(save_dir, 'iter%d.pth'%test_iter))
     model.load_state_dict(info['weights'])
@@ -89,9 +90,9 @@ def main(args, conf):
 
     with torch.no_grad():
         st_time = time.time()
-        cur_log = os.path.join(save_dir, 'test_.log')
-        pred_text = os.path.join(save_dir, 'pred_.txt')
-        label_text = os.path.join(save_dir, 'label_.txt')
+        cur_log = os.path.join(save_dir, 'test_wfst1000_ac6_30.log')
+        pred_text = os.path.join(save_dir, 'pred_wfst.txt')
+        label_text = os.path.join(save_dir, 'label_wfst.txt')
         check_file(cur_log)
         check_file(pred_text)
         check_file(label_text)
@@ -101,7 +102,7 @@ def main(args, conf):
         writelog(cur_log, "iter%d.pth"%test_iter)
         writelog(cur_log, '--------------------------------------------------------')
         cnt_uttr = 0
-        for i, batch in enumerate(test_dataloader):
+        for i, batch in enumerate(tqdm(test_dataloader)):
             uttrs, feats, labels, xlens, ylens = batch
             xlens = xlens.cuda()
             feats = feats.cuda()
@@ -125,7 +126,8 @@ def main(args, conf):
             total_error += err
             total_tokens += len(uttr_label[0])
             cnt_uttr += 1
-            writelog(cur_log, 'utt[%d], current wer: %f' % (cnt_uttr, err / (len(uttr_label[0])+1e-20)))
+            # writelog(cur_log, 'utt[%d], current wer: %f' % (cnt_uttr, err / (len(uttr_label[0])+1e-20)))
+            writelog(cur_log, 'utt[%d], utt_wer: %f current wer: %f' % (cnt_uttr, err / (len(uttr_label[0])+1e-20), total_error / (total_tokens+1e-20)))
             writelog(cur_log, 'label: %s' % uttr_label[0])
             writelog(cur_log, 'pred: %s'% uttr_pred[0])
             writelog(cur_log, '')

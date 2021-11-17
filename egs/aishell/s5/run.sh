@@ -24,7 +24,7 @@ model=results/${corpus}
 resume=
 lm_resume=
 
-save_dir=results/aishell/1108_mlp
+save_dir=results/aishell/1115_mlp
 
 # path to save preprocessed data
 # Select the downloaded data
@@ -114,7 +114,7 @@ if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
 fi 
 
 if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
-    echo "++++++test ASR++++++"
+    echo "++++++test ASR for beamsearch ++++++"
     CUDA_VISIBLE_DEVICES=1 python ${SEE_ROOT}/src/test.py \
             --save_dir ${save_dir} \
             --conf_path ${conf} \
@@ -124,8 +124,31 @@ if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
             --cmvn_file ${data}/train/global_cmvn
 fi 
 
-export_model=${save_dir}/iter99.pth 
+
 if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
+    echo "++++++ ngram training stage (LG.fst)++++++"
+    mkdir -p ${data}/lm/dict
+    cp ${dict} ${data}/lm/dict/units.txt 
+    # non-bpe model
+    
+    prepare_dict.py ${data}/lm/dict/units.txt \
+                    ${download_data}/resource_aishell/lexicon.txt \
+                    ${data}/lm/dict/lexicon.txt || exit 1;
+    
+    # train ngram
+    lm=${data}/lm 
+    filter_scp.pl ${data}/train/text \
+                ${download_data}/data_aishell/transcript/aishell_transcript_v0.8.txt > $lm/text || exit 1;
+
+    local/aishell_train_ngram.sh 
+
+    # build LG.fst
+    build_graph_main.py
+
+fi
+
+export_model=${save_dir}/iter99.pth 
+if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
     echo "++++++ export model ++++++"
     python ${SEE_ROOT}/src/export_jit.py \
             --conf_path ${conf} \

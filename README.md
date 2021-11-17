@@ -22,11 +22,7 @@ Listen, attend and spell Model for Mandarin
 
 | Model                                 | wer (%) | config   |
 | ------------------------------------- | ------- | -------- |
-| Listen, Attend and Spell （no LM）[1] | 8.61    | las.yaml |
-
-Result Details:
-
-[1]. wer: 8.61, sub: 8.23, ins: 0.20, del: 0.17
+| Listen, Attend and Spell （no LM）[1] | 8.84    | las.yaml |
 
 
 ## Reference：
@@ -36,5 +32,5 @@ Result Details:
 3. [neural_sp](https://github.com/hirofumi0810/neural_sp)
 
 ## TODO
-- [ ] wfst decode
+- [x] wfst decode (py)
 - [ ] export model

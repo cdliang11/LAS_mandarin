@@ -70,13 +70,13 @@ def main(args, conf):
 
     # define train 
     # TODO: use yaml 
-    tol_iter = 100
+    tol_iter = conf['train']['tol_iter']
     init_lr = 3e-4
-    base_lr = 3e-4
+    base_lr = conf['train']['base_lr']
     grad_clip = 5.0
     save_dir = args.save_dir
 
-    model = build_model.LAS(feat_dim=80, vocab=vocab_size, global_cmvn=global_cmvn)
+    model = build_model.LAS(feat_dim=conf['data']['collate_fn']['mel_bins'], vocab=vocab_size, global_cmvn=global_cmvn)
     optimizer = torch.optim.Adam(model.parameters(), lr=base_lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer,
                                                         mode='min',

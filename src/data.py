@@ -34,6 +34,8 @@ from PIL.Image import BICUBIC
 
 # pad
 IGNORE_ID = -1
+SOS = 4234
+EOS = 4235
 
 def _spec_augmentation(x,
                        warp_for_time=False,
@@ -182,7 +184,7 @@ def _feature_extraction(batch, speed_perturb, feature_conf):
     sorted_uttrs = [uttrs[i] for i in _index]
     sorted_feats = [feats[i] for i in _index]
     # token_id
-    labels = [['4233'] + x[2].split() + ['4234'] for x in batch] # add eos
+    labels = [[str(SOS)] + x[2].split() + [str(EOS)] for x in batch] # add eos
     # print(labels)
     # assert False
     labels = [np.fromiter(map(int, x), dtype=np.int32) for x in labels]

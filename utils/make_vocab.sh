@@ -37,8 +37,8 @@ echo "<blank> 0" > ${dict}
 echo "<unk> 1" >> ${dict}  # <unk> must be 1, 0 will be used for "blank" in CTC
 # echo "<eos> 2" >> ${dict}  # <sos> and <eos> share the same index
 echo "<pad> 2" >> ${dict}
-# [ ${unit} = char ] && echo "<space> 4" >> ${dict}
-# [ ${unit} = char_space ] && echo "<space> 4" >> ${dict}
+[ ${unit} = char ] && echo "<space> 3" >> ${dict}
+[ ${unit} = char_space ] && echo "<space> 3" >> ${dict}
 offset=$(cat ${dict} | wc -l)
 # if [ ${unit} = wp ]; then
 #     if [ ${speed_perturb} = true ]; then
