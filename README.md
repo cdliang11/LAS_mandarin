@@ -34,3 +34,4 @@ Listen, attend and spell Model for Mandarin
 ## TODO
 - [x] wfst decode (py)
 - [ ] export model
+- [ ] decode (libtorch)
