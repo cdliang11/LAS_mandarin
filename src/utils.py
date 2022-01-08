@@ -4,7 +4,48 @@ import torch
 import math
 import numpy as np
 import json
-def make_pad_mask(lengths: torch.Tensor) -> torch.Tensor:
+
+from typing import Tuple, List
+
+
+def tensor2np(x):
+    """Convert torch.Tensor to np.ndarray
+    Args:
+        x (torch.Tensor)
+    Returns:
+        np.ndarray
+    """
+    if x is None:
+        return x 
+    return x.cpu().detach().numpy()
+
+def log_add(args: List[int]) -> float:
+    """
+    Stable log add 
+    """
+    if all(a == -float('inf') for a in args):
+        return -float('inf')
+    a_max = max(args)
+    lsp = math.log(sum(math.exp(a - a_max) for a in args))
+    return a_max + lsp
+
+
+def remove_duplicates_and_blank(hyp: List[int]) -> List[int]:
+    """
+    remove duplicates and blank 
+    """
+    new_hyp: List[int] = []
+    cur = 0
+    while cur < len(hyp):
+        if hyp[cur] != 0:
+            new_hyp.append(hyp[cur])
+        prev = cur 
+        while cur < len(hyp) and hyp[cur] == hyp[prev]:
+            cur += 1
+    
+    return new_hyp
+
+def make_pad_mask(lengths: torch.Tensor, le : bool = True) -> torch.Tensor:
     """Make mask tensor containing indices of padded part.
 
     See description of make_non_pad_mask.
@@ -33,7 +74,11 @@ def make_pad_mask(lengths: torch.Tensor) -> torch.Tensor:
     seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len)
     seq_length_expand = lengths.unsqueeze(-1)
     # mask = seq_range_expand >= seq_length_expand
-    mask = (seq_range_expand < seq_length_expand).type(torch.float32)
+    # fix: torch.float32 -> torch.int32
+    if le:
+        mask = (seq_range_expand < seq_length_expand).type(torch.int32)
+    else:
+        mask = (seq_range_expand >= seq_length_expand).type(torch.int32)
 
     # print(mask)
     return mask

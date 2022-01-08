@@ -1,4 +1,5 @@
 
+from collections import defaultdict
 from typing import ContextManager
 import numpy
 
@@ -6,10 +7,12 @@ import torch
 
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.modules import loss
+
+from ctc import CTC, CTCPrefixScore, add_ctc_score
 
 from data import EOS, SOS
 from decoder import WFSTDecoder
+from utils import make_pad_mask, remove_duplicates_and_blank, log_add, tensor2np
 
 
 inference_config = {
@@ -21,7 +24,7 @@ inference_config = {
     "lm_type": "",
     "wfst_graph":"corpus/aishell1/lm/graph/LG.fst",
     "acoustic_scale":6.0,
-    "max_active":1000,
+    "max_active":30,
     "min_active":0,
     "wfst_beam": 30.0,
     "max_seq_len":100
@@ -57,47 +60,72 @@ class LabelSmoothingCrossEntropy(nn.Module):
         loss = -log_preds.sum(dim=-1)
         loss = loss.mean()
         return loss * self.eps/c + (1-self.eps) * F.nll_loss(log_preds, target, reduction='mean')
+        
 
 class LAS(nn.Module):
-    def __init__(self, feat_dim:int, vocab:int, global_cmvn:torch.nn.Module = None, is_wfst=False):
-        super(LAS, self).__init__()
+    def __init__(self, feat_dim:int, vocab:int, global_cmvn:torch.nn.Module = None, is_wfst=False,
+                ctc_weight=0.3):
+        assert 0.0 <= ctc_weight <= 1.0, ctc_weight
 
+        super(LAS, self).__init__()
         self.feat_dim = feat_dim
         self.vocab = vocab
         self.global_cmvn = global_cmvn
         self.encoder = Encoder(self.feat_dim*4) # *4
         self.decoder = Decoder(self.vocab, is_wfst=is_wfst)
-
+        self.ctc = CTC(vocab, self.encoder.encode_size())
+        self.ctc_weight = ctc_weight
         self.loss = LabelSmoothingCrossEntropy()
         self.sos = SOS
         self.eos = EOS
+        self.blank = 0
 
         self.is_wfst = is_wfst
         
     
-    def forward(self, x:torch.Tensor, x_mask:torch.Tensor, y:torch.Tensor, y_mask:torch.Tensor):
+    def forward(self, x:torch.Tensor, x_mask:torch.Tensor, y:torch.Tensor, y_mask:torch.Tensor,
+                _y: torch.Tensor, _ylens: torch.Tensor):
         if self.global_cmvn is not None:
             x = self.global_cmvn(x)
         # print(x.shape)
         # assert False
         x = mod_pad(x, 4)
         x = mod_cat(x, 4)
+        # print(x_mask.shape)
         x_mask = mod_pad(x_mask, 4)
         x_mask = mod_ext(x_mask, 4)
+        eout_lens = x_mask.squeeze(2).sum(1)
+        # print(eout_lens)
+        # print(x_mask)
+        # assert False
         eout = self.encoder(x, x_mask)
-        logit = self.decoder(eout, x_mask, y, y_mask)
+        # attention 
+        if self.ctc_weight != 1.0:
+            logit = self.decoder(eout, x_mask, y, y_mask)
+            real = y_mask[:, 1:].gt(0)
+            label = y[:,1:] # remove <sos>
+            loss_att = self.loss(logit[real], label[real])
+        else:
+            loss_att = None 
+        
+        # ctc 
+        if self.ctc_weight != 0.0:
+            # for ctc: remove <s> and </s>
+            loss_ctc = self.ctc(eout, eout_lens, _y, _ylens)
+        else:
+            loss_ctc = None
 
-        real = y_mask[:, 1:].gt(0)
-        # real = y_mask[:,:].gt(0)
-        label = y[:, 1:]  # [:, 1:]
-        # print(label.shape)
-        # print(logit.shape)
-        # print(real)
+        if loss_ctc is None:
+            loss = loss_att
+        elif loss_att is None:
+            loss = loss_ctc
+        else:
+            loss = self.ctc_weight * loss_ctc + (1-self.ctc_weight) * loss_att
 
-        loss = self.loss(logit[real], label[real])
-        return loss
+        
+        return loss, loss_att, loss_ctc
     
-    def predict(self, x:torch.Tensor, x_mask:torch.Tensor):
+    def predict(self, x:torch.Tensor, x_mask:torch.Tensor, decode_method : str = 'ctc_prefix'):
         assert 1 == x.shape[0]
         if self.global_cmvn is not None:
             x = self.global_cmvn(x)
@@ -105,14 +133,28 @@ class LAS(nn.Module):
         x = mod_cat(x, 4)
         x_mask = mod_pad(x_mask, 4)
         x_mask = mod_ext(x_mask, 4)
-
-        eout = self.encoder(x, x_mask)
+        eout_lens = x_mask.squeeze(2).sum(1)
+        eout = self.encoder(x, x_mask) # eout
         # print(eout.shape)
         if self.is_wfst:
             pred = self.decoder.wfst_decode(eout) # []
         else:
-            pred = self.decoder.beamsearch(eout)
-
+            assert self.is_wfst is False 
+            assert decode_method in ['ctc_greedy', 'ctc_prefix', 'attention_rescore', 'attention']
+            if decode_method == 'attention_rescore':
+                ctc_log_probs = self.ctc.log_softmax(eout)
+                pred = self.decoder._ctc_att_dec(eout, ctc_weight=0.3, ctc_log_probs=ctc_log_probs, 
+                                                blank=self.blank, eos=self.eos)
+            elif decode_method == 'attention':
+                pred = self.decoder.beamsearch(eout)
+            elif decode_method == 'ctc_greedy':
+                pred = self.ctc_greedy(eout, eout_lens)
+            elif decode_method == 'ctc_prefix':
+                pred = self._ctc_prefix_beam_search(eout, eout_lens, beam_size=10)
+            else:
+                raise NotImplementedError
+        
+        # print(pred)
         return pred
     
     @torch.jit.export
@@ -122,9 +164,98 @@ class LAS(nn.Module):
     @torch.jit.export 
     def eos_symbol(self) -> int:
         return self.eos 
+    
+    def ctc_greedy(self, eout: torch.Tensor,
+                    eout_lens: torch.Tensor) :
+        """CTC greedy decode
+        Args:
+            eout: (batch, maxlen, feat_dim)
+            eout_lens: (batch, )
+        Returns:
+            best path result
+        """
+        assert eout.shape[0] == eout_lens.shape[0]
+        batch_size = eout.shape[0]
+        # B = batch_size 
+        # eout eout_lens
+        maxlen = eout.size(1)
+        ctc_probs = self.ctc.log_softmax(eout) # (B, maxlen, vocab_size)
+        topk_prob, topk_index = ctc_probs.topk(1, dim=2) # [B, maxlen, 1]
+        topk_index = topk_index.view(batch_size, maxlen) # [B, maxlen]
+        mask = make_pad_mask(eout_lens, le=False).bool() # (B, maxlen)
+        # print(mask)
+        topk_index = topk_index.masked_fill_(mask, self.eos)  # [B, maxlen]
+        hyps = [hyp.tolist() for hyp in topk_index]
+        hyps = [remove_duplicates_and_blank(hyp) for hyp in hyps] 
+
+        return torch.Tensor(hyps)
+    
+    def _ctc_prefix_beam_search(self, eout: torch.Tensor,
+                                eout_lens: torch.Tensor,
+                                beam_size: int):
+        """CTC prefix beam search 
+        reference: wenet
+        Args:
+            eout (torch.Tensor): (batch, max_len, feat_dim)
+            eout_lens (torch.Tensor): (batch, )
+            beam_size (int): beam size for beam search
+        Returns:
+            List[List[int]]: nbest results
+        """
+        assert eout.shape[0] == eout_lens.shape[0]
+        batch_size = eout.shape[0]
+        # only support batch_size = 1
+        assert batch_size == 1 
+        # 1. get ctc score 
+        maxlen = eout.size(1)
+        ctc_probs = self.ctc.log_softmax(eout) # [1, maxlen, vocab_size]
+        ctc_probs = ctc_probs.squeeze(0) # [maxlen, vocab_size] 
+        cur_hyps = [(tuple(), (0.0, -float('inf')))] # 
+        # 2. ctc beam search step by step
+        for t in range(0, maxlen):
+            # time 
+            logp = ctc_probs[t] # (vocab_size) 
+            # key: prefix, value (pb, pnb), default value(-inf, -inf)
+            next_hyps = defaultdict(lambda: (-float('inf'), -float('inf')))
+            # 2.1 first beam prune: select topk best 
+            top_k_logp, top_k_index = logp.topk(beam_size) # (beam_size, )
+            for s in top_k_index:
+                s = s.item() 
+                ps = logp[s].item() 
+                for prefix, (pb, pnb) in cur_hyps:
+                    last = prefix[-1] if len(prefix) > 0 else None
+                    if s == 0: # blank
+                        n_pb, n_pnb = next_hyps[prefix]
+                        n_pb = log_add([n_pb, pb + ps, pnb + ps])
+                        next_hyps[prefix] = (n_pb, n_pnb)
+                    elif s == last:
+                        # *ss -> *s
+                        n_pb, n_pnb = next_hyps[prefix]
+                        n_pnb = log_add([n_pnb, pnb + ps])
+                        next_hyps[prefix] = (n_pb, n_pnb)
+                        # *s-s -> *ss
+                        n_prefix = prefix + (s, )
+                        n_pb, n_pnb = next_hyps[n_prefix]
+                        n_pnb = log_add([n_pnb, pb + ps])
+                        next_hyps[n_prefix] = (n_pb, n_pnb)
+                    else:
+                        n_prefix = prefix + (s, )
+                        n_pb, n_pnb = next_hyps[n_prefix]
+                        n_pnb = log_add([n_pnb, pb+ps, pnb+ps])
+                        next_hyps[n_prefix] = (n_pb, n_pnb)
+            # 2.2 second beam prune 
+            next_hyps = sorted(next_hyps.items(),
+                                key=lambda x : log_add(list(x[1])),
+                                reverse=True)
+            cur_hyps = next_hyps[:beam_size]
+        
+        hyps = [(y[0], log_add([y[1][0], y[1][1]])) for y in cur_hyps] # ctc_prefix beam
+        # print(list(hyps[0][0]))
+        return torch.Tensor(list(hyps[0][0])).unsqueeze(0)
+    
 
 
-
+        
 
 
 class Encoder(nn.Module):
@@ -147,6 +278,9 @@ class Encoder(nn.Module):
         nn.init.xavier_uniform_(self.conv_2.weight)
         nn.init.constant_(self.conv_1.bias, 0)
         nn.init.constant_(self.conv_2.bias, 0)
+    
+    def encode_size(self) -> int :
+        return self.proj_size
 
     def forward(self, x:torch.Tensor, x_mask: torch.Tensor):
         # x [B, T, D]
@@ -351,13 +485,7 @@ class Decoder(nn.Module):
         # libtorch: cann't use numpy
         # score[score < numpy.exp(-1e30)] = numpy.exp(-1e30) 
         score = torch.log(score) #[1,1,4236]
-        # print(score.shape)
-        # print(context.shape)
-        # print(h_att_lstm.shape)
-        # print(c_att_lstm.shape)
-        # print(init_h.shape)
-        # print(init_c.shape)
-        # assert False
+     
         
         return score, context, h_att_lstm, c_att_lstm, init_hc
 
@@ -438,18 +566,7 @@ class Decoder(nn.Module):
         score = torch.nn.functional.softmax(logit, dim=2)
         # print(score)
         # libtorch: cann't use numpy
-        # score[score < numpy.exp(-1e30)] = numpy.exp(-1e30) 
-        # print(context.shape)
-        # print(h_att_lstm.shape)
-        # print(c_att_lstm.shape)
-        # print(init_h.shape)
-        # print(init_c.shape)
         score = torch.log(score).squeeze(dim=1) # [bs, 1, vocabsize]
-        
-        # print(score.shape)
-        # print(context[0, :].unsqueeze(dim=0).shape)
-        # print(h_att_lstm[:,0,:].unsqueeze(dim=1).shape)
-        # print(c_att_lstm[:,0,:].unsqueeze(dim=1).shape)
         
         # assert False
 
@@ -460,14 +577,106 @@ class Decoder(nn.Module):
                                                 init_h[:,b,:].unsqueeze(dim=1), 
                                                 init_c[:,b,:].unsqueeze(dim=1) )) for b in range(bs)]
 
+
+    def _ctc_att_dec(self, eout: torch.Tensor, ctc_weight: int, ctc_log_probs: torch.Tensor,
+                    blank, eos):
+        beam_size = 10 
+        max_utt_len = eout.shape[1]
+        assert 0<=ctc_weight<=1 
+
+        att_h = self.w(eout)  # build edge  # [B, T, dim]
+
+
+
+        # 初始化
+        h_att_lstm = torch.zeros([1,1,self.proj_size], device=eout.device)
+        c_att_lstm = torch.zeros([1,1,self.hidden_size], device=eout.device)
+        context = torch.zeros([1, self.word_dim], device=eout.device)
+        # init_hc = (torch.zeros([1,1,self.proj_size], device=eout.device),
+        #             torch.zeros([1,1,self.hidden_size], device=eout.device))
+        # for libtorch
+        init_h = torch.zeros([1,1,self.proj_size], device=eout.device)
+        init_c = torch.zeros([1,1,self.hidden_size], device=eout.device)
+
+        # for ctc/attention 
+        ctc_prefix_scorer = None 
+        if ctc_weight > 0:
+            ctc_log_probs = tensor2np(ctc_log_probs)
+            ctc_prefix_scorer = CTCPrefixScore(ctc_log_probs[0], blank, eos)
+        
+        beams = [{'h_att_lstm': h_att_lstm,
+                'c_att_lstm': c_att_lstm,
+                'init_hc': (init_h, init_c),
+                'context': context,
+                'preds': [torch.full([1], SOS, dtype=torch.int64, device=eout.device)], # the first predict word is <s>
+                'scores': [],
+                'ctc_state': ctc_prefix_scorer.initial_state() if ctc_prefix_scorer is not None else None}]
+
+        for n in range(max_utt_len): # eout length # 循环解码
+            # for ctc/attention
+            beams_updates = []
+            for i in range(len(beams)):
+                b = beams[i]
+                if b['preds'][-1].item() == EOS: # stop </s>
+                    beams_updates.append(b)
+                    continue
+                else:
+                    y = b['preds'][-1]
+                    context = b['context']
+                    h_att_lstm = b['h_att_lstm']
+                    c_att_lstm = b['c_att_lstm']
+                    (init_h, init_c) = b['init_hc']
+                    
+                    score, context, h_att_lstm, c_att_lstm, init_hc = self.decode_ont_step(y,
+                                                                                        eout,
+                                                                                        context,
+                                                                                        h_att_lstm=h_att_lstm,
+                                                                                        c_att_lstm=c_att_lstm,
+                                                                                        init_h=init_h,
+                                                                                        init_c=init_c,
+                                                                                        att_h=att_h)
+                    
+
+                    top_score, top_id = torch.topk(score, k=beam_size, dim=-1)
+                    # torch.Tensor [1,1,beam_size]
+              
+                    new_ctc_states, total_scores_ctc, total_scores_topk, topk_ids = add_ctc_score(b['preds'], top_id, b['ctc_state'],
+                                                                            top_score, ctc_prefix_scorer, beam_size=beam_size, ctc_weight=ctc_weight)
+                    # [10, 105, 2]
+                    # [10]
+                    # [1,1,10]
+               
+
+                    for j in range(beam_size):
+                        b_branch = b.copy()
+                        b_branch['context'] = context
+                        b_branch['h_att_lstm'] = h_att_lstm
+                        b_branch['c_att_lstm'] = c_att_lstm
+                        b_branch['init_hc'] = init_hc
+                        b_branch['preds'] = b_branch['preds'] + [topk_ids[0,0,j].reshape(1)]
+                        b_branch['scores'] = b_branch['scores'] + [total_scores_topk[0,0,j].item()]
+                        b_branch['ctc_state'] = new_ctc_states[j]
+                        beams_updates.append(b_branch)
+            beams = beams_updates
+            # TODO: add ctc rescore
+
+            # print(beams)
+            # assert False
+            beams = sorted(beams, key=lambda b : numpy.mean(b['scores']), reverse=True)
+            beams = beams[:beam_size]
+        b = beams[0]
+        preds = b['preds'] # token_id
+        preds = torch.stack(preds, dim=-1) # [1, seq_length]
+        return preds
+
+
+
     def beamsearch(self, eout:torch.Tensor):
         beam_size = 10
         max_utt_len = eout.shape[1]
 
-        att_h = self.w(eout)
-        # print(eout.shape)
-        # print(att_h.shape)
-        # assert False
+        att_h = self.w(eout)  # build edge  # [B, T, dim]
+
 
         h_att_lstm = torch.zeros([1,1,self.proj_size], device=eout.device)
         c_att_lstm = torch.zeros([1,1,self.hidden_size], device=eout.device)
@@ -485,7 +694,8 @@ class Decoder(nn.Module):
                 'preds': [torch.full([1], SOS, dtype=torch.int64, device=eout.device)], # the first predict word is <s>
                 'scores': []}]
         
-        for n in range(max_utt_len): # eout length
+        for n in range(max_utt_len): # eout length # 循环解码
+
             beams_updates = []
             for i in range(len(beams)):
                 b = beams[i]
@@ -508,7 +718,7 @@ class Decoder(nn.Module):
                                                                                         init_c=init_c,
                                                                                         att_h=att_h)
 
-                    top_score, top_id = torch.topk(score, k=beam_size, dim=-1)
+                    top_score, top_id = torch.topk(score, k=beam_size, dim=-1) # [1, 1, beam_size]
                     for j in range(beam_size):
                         b_branch = b.copy()
                         b_branch['context'] = context
@@ -519,6 +729,8 @@ class Decoder(nn.Module):
                         b_branch['scores'] = b_branch['scores'] + [top_score[0,0,j].item()]
                         beams_updates.append(b_branch)
             beams = beams_updates
+            # TODO: add ctc rescore
+
             # print(beams)
             # assert False
             beams = sorted(beams, key=lambda b : numpy.mean(b['scores']), reverse=True)
@@ -555,4 +767,8 @@ class Decoder(nn.Module):
         # print(words_pred)
         # print(torch.tensor(preds))
         return torch.tensor(preds).unsqueeze(dim=0)
+    
+    
+        
+    
         

@@ -76,7 +76,10 @@ def main(args, conf):
     grad_clip = 5.0
     save_dir = args.save_dir
 
-    model = build_model.LAS(feat_dim=conf['data']['collate_fn']['mel_bins'], vocab=vocab_size, global_cmvn=global_cmvn)
+    model = build_model.LAS(feat_dim=conf['data']['collate_fn']['feature_conf']['mel_bins'], 
+                            vocab=vocab_size, 
+                            global_cmvn=global_cmvn,
+                            ctc_weight=0.3)
     optimizer = torch.optim.Adam(model.parameters(), lr=base_lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer,
                                                         mode='min',
@@ -160,17 +163,26 @@ def main(args, conf):
         train_loss = []
         total_uttr_train = 0
         for i, batch in enumerate(train_dataloader):
-            # batch : uttrs, feats_pad, labels_pad, xlens, ylens
-            uttrs, feats, labels, xlens, ylens = batch
+            # batch : uttrs, feats_pad, labels_pad, xlens, ylens, _y, _ylens
+            # _y and _ylens: dont have <s> and </s>
+            uttrs, feats, labels, xlens, ylens, _y, _ylens = batch
             # print(labels.shape)
             # assert False
             feats = feats.cuda().detach()
             labels = labels.cuda().detach()
             xlens = xlens.cuda().detach()
             ylens = ylens.cuda().detach()
+            _y = _y.cuda().detach()
+            _ylens = _ylens.cuda().detach()
             num_uttr = ylens.size(0)
             if num_uttr == 0:
                 continue
+                
+            # print(labels)
+            # print(_y)
+            # print(ylens)
+            # print(_ylens)
+            # assert False
             
             max_xlen = torch.max(xlens)
             x_mask = make_pad_mask(xlens).unsqueeze(dim=-1).detach()
@@ -183,10 +195,15 @@ def main(args, conf):
             labels = labels.long().detach()
             y_mask = torch.zeros_like(labels).cuda()
             y_mask[torch.where(labels != 2)] = 1
+            _y[torch.where(_y < 0)] = 2 # pad id
+            _y = _y.long().detach()
+            # print(labels)
             # print(y_mask)
 
             # assert False
-            loss = model(feats, x_mask, labels, y_mask)
+            loss, loss_att, loss_ctc = model(feats, x_mask, labels, y_mask, _y, _ylens)
+            loss_att = loss_att if loss_att is not None else 0
+            loss_ctc = loss_ctc if loss_ctc is not None else 0
 
             train_loss.append(loss.item())
             optimizer.zero_grad()
@@ -197,8 +214,8 @@ def main(args, conf):
             ed_time = time.time()
             total_uttr_train += num_uttr
             # read_utt, total_utt = train_data.Progress()
-            train_log = "propossed=[%d], loss=%f, duration_batch=%f" % \
-                        (total_uttr_train, np.mean(train_loss), ed_time - st_time)
+            train_log = "propossed=[%d], meanloss=%f (cur: loss: %f, loss_att: %f, loss_ctc: %f), duration_batch=%f" % \
+                        (total_uttr_train, np.mean(train_loss), loss.item(), loss_att.item(), loss_ctc.item(), ed_time - st_time)
             writelog(cur_log, train_log)
         writelog(cur_log, '---------------------------------------------------------')
 
@@ -208,11 +225,13 @@ def main(args, conf):
         total_uttr_dev = 0
         for i, batch in enumerate(dev_dataloader):
             st_time = time.time()
-            uttrs, feats, labels, xlens, ylens = batch
+            uttrs, feats, labels, xlens, ylens, _y, _ylens = batch
             feats = feats.cuda()
             labels = labels.cuda()
             xlens = xlens.cuda()
             ylens = ylens.cuda()
+            _y = _y.cuda().detach()
+            _ylens = _ylens.cuda().detach()
 
             num_uttr = ylens.size(0)
             if num_uttr == 0:
@@ -229,8 +248,14 @@ def main(args, conf):
             labels = labels.long()
             y_mask = torch.zeros_like(labels).cuda()
             y_mask[torch.where(labels != 2)] = 1
+            _y[torch.where(_y < 0)] = 2 # pad id 
+            _y = _y.long().detach()
 
-            loss = model(feats, x_mask, labels, y_mask)
+            loss, loss_att, loss_ctc = model(feats, x_mask, labels, y_mask, _y, _ylens)
+            loss_att = loss_att if loss_att is not None else 0
+            loss_ctc = loss_ctc if loss_ctc is not None else 0
+
+
             dev_loss.append(loss.item())
             ed_time = time.time()
 
@@ -238,7 +263,7 @@ def main(args, conf):
             dev_log = "propossed=[%d], loss=%f, duration_batch=%f" % \
                         (total_uttr_dev, np.mean(dev_loss), ed_time - st_time)
             writelog(cur_log, train_log)
-        dev_log = "iter=%d, lr=%f, dev loss=%f" % (cur_iter, cur_lr, np.mean(dev_loss))
+        dev_log = "iter=%d, lr=%f, dev loss=%f (cur: loss: %f, loss_att: %f, loss_ctc: %f)" % (cur_iter, cur_lr, np.mean(dev_loss), loss.item(), loss_att.item(), loss_ctc.item())
         writelog(cur_log, dev_log)
         writelog(cur_log, '------------------------------------------------------------')
 

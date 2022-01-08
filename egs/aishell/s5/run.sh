@@ -24,7 +24,7 @@ model=results/${corpus}
 resume=
 lm_resume=
 
-save_dir=results/aishell/1115_mlp
+save_dir=results/aishell/1229_mlp
 
 # path to save preprocessed data
 # Select the downloaded data
@@ -102,7 +102,7 @@ fi
 
 if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
     echo "++++++train ASR+++++++"
-    CUDA_VISIBLE_DEVICES=1 python ${SEE_ROOT}/src/train.py \
+    CUDA_VISIBLE_DEVICES=2 python ${SEE_ROOT}/src/train.py \
             --save_dir ${save_dir} \
             --conf_path ${conf} \
             --n_works 8 \
@@ -115,7 +115,7 @@ fi
 
 if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
     echo "++++++test ASR for beamsearch ++++++"
-    CUDA_VISIBLE_DEVICES=1 python ${SEE_ROOT}/src/test.py \
+    CUDA_VISIBLE_DEVICES=3 python ${SEE_ROOT}/src/test.py \
             --save_dir ${save_dir} \
             --conf_path ${conf} \
             --test_data_file ${data}/dataset/test.tsv \

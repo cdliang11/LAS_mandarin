@@ -18,7 +18,7 @@
 import torch
 import numpy as np
 import random
-from torch._C import _is_tracing
+from torch._C import _is_tracing, dtype
 import torchaudio
 import torchaudio.compliance.kaldi as kaldi
 import torchaudio.sox_effects as sox_effects
@@ -185,12 +185,17 @@ def _feature_extraction(batch, speed_perturb, feature_conf):
     sorted_feats = [feats[i] for i in _index]
     # token_id
     labels = [[str(SOS)] + x[2].split() + [str(EOS)] for x in batch] # add eos
+    neos_labels = [x[2].split() for x in batch]
     # print(labels)
     # assert False
     labels = [np.fromiter(map(int, x), dtype=np.int32) for x in labels]
+    neos_labels = [np.fromiter(map(int, x), dtype=np.int32) for x in neos_labels]
+
     sorted_labels = [labels[i] for i in _index]
+    sorted_neos_labels = [neos_labels[i] for i in _index]
     sorted_ylens = [int(ylens[i])+2 for i in _index]
-    return sorted_uttrs, sorted_feats, sorted_labels, sorted_ylens
+    sorted_neoslens = [int(ylens[i]) for i in _index]
+    return sorted_uttrs, sorted_feats, sorted_labels, sorted_ylens, sorted_neos_labels, sorted_neoslens
 
     
 
@@ -213,7 +218,7 @@ class collatefunc(object):
         assert len(batch) == 1
         
         # feature extraction
-        uttrs, feats, labels, ylens = _feature_extraction(batch[0], self.speed_perturb, self.feature_conf)
+        uttrs, feats, labels, ylens, ny, nylens = _feature_extraction(batch[0], self.speed_perturb, self.feature_conf)
         
         is_training = True
         if labels is None:
@@ -241,10 +246,21 @@ class collatefunc(object):
                 labels_pad = pad_sequence([torch.from_numpy(y).int() for y in labels], True, IGNORE_ID)
             else:
                 labels_pad = torch.Tensor(labels)
+            
+            # ny: fix 
+            nylens = torch.from_numpy(np.array([y.shape[0] for y in ny], dtype=np.int32))
+            if len(nylens) > 0:
+                ny_pad = pad_sequence([torch.from_numpy(y).int() for y in ny], True, IGNORE_ID)
+            else:
+                ny_pad = torch.Tensor(ny)
+                
         else:
             labels_pad = None
             _ylens = None
-        return uttrs, feats_pad, labels_pad, xlens, _ylens
+            ny_pad = None
+            nylens = None
+        # _ylen and label : include <s> </s>
+        return uttrs, feats_pad, labels_pad, xlens, _ylens, ny_pad, nylens
 
 
 

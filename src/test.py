@@ -57,7 +57,7 @@ def main(args, conf):
 
     save_dir = args.save_dir # model path
     test_iter = args.test_iter
-    model = build_model.LAS(feat_dim=80, vocab=vocab_size, global_cmvn=global_cmvn, is_wfst=True)
+    model = build_model.LAS(feat_dim=80, vocab=vocab_size, global_cmvn=global_cmvn, is_wfst=False)
     info = torch.load(os.path.join(save_dir, "iter%d.pth"%test_iter), map_location=torch.device('cpu'))
     print(os.path.join(save_dir, 'iter%d.pth'%test_iter))
     model.load_state_dict(info['weights'])
@@ -90,9 +90,9 @@ def main(args, conf):
 
     with torch.no_grad():
         st_time = time.time()
-        cur_log = os.path.join(save_dir, 'test_wfst1000_ac6_30.log')
-        pred_text = os.path.join(save_dir, 'pred_wfst.txt')
-        label_text = os.path.join(save_dir, 'label_wfst.txt')
+        cur_log = os.path.join(save_dir, 'test_ctcprefix.log')
+        pred_text = os.path.join(save_dir, 'pred_ctcprefix.txt')
+        label_text = os.path.join(save_dir, 'label_ctcprefix.txt')
         check_file(cur_log)
         check_file(pred_text)
         check_file(label_text)
@@ -103,7 +103,7 @@ def main(args, conf):
         writelog(cur_log, '--------------------------------------------------------')
         cnt_uttr = 0
         for i, batch in enumerate(tqdm(test_dataloader)):
-            uttrs, feats, labels, xlens, ylens = batch
+            uttrs, feats, labels, xlens, ylens, _, _ = batch
             xlens = xlens.cuda()
             feats = feats.cuda()
             labels = labels

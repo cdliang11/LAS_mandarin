@@ -20,9 +20,11 @@ Listen, attend and spell Model for Mandarin
 
 ## Results
 
-| Model                                 | wer (%) | config   |
-| ------------------------------------- | ------- | -------- |
-| Listen, Attend and Spell （no LM）[1] | 8.84    | las.yaml |
+| Model                                                   | wer (%) |
+| ------------------------------------------------------- | ------- |
+| Listen, Attend and Spell （no LM）[1]  ctcprefix_beam10 | 13.76   |
+| +  joint CTC/attention  ctc0                            | 12.49   |
+| + ctc0.3                                                | 11.72   |
 
 
 ## Reference：
@@ -33,5 +35,5 @@ Listen, attend and spell Model for Mandarin
 
 ## TODO
 - [x] wfst decode (py)
-- [ ] export model
+- [x] export model
 - [ ] decode (libtorch)

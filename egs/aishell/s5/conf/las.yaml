@@ -21,11 +21,8 @@ data:
         dynamic_batch: False
         batch_size: 32
         max_frames_in_batch: 8000
-
-
-
 train:
-    tol_iter: 100
+    tol_iter: 101
     base_lr: 0.0003 # 3e-4
 
 
