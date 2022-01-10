@@ -22,9 +22,9 @@ Listen, attend and spell Model for Mandarin
 
 | Model                                                   | wer (%) |
 | ------------------------------------------------------- | ------- |
-| Listen, Attend and Spell （no LM）[1]  ctcprefix_beam10 | 13.76   |
-| +  joint CTC/attention  ctc0                            | 12.49   |
-| + ctc0.3                                                | 11.72   |
+| Listen, Attend and Spell （no LM）[1]  ctcprefix_beam10 | 10.26   |
+| +  joint CTC/attention  ctc0                            | 9.10    |
+| + ctc0.3                                                | 8.93    |
 
 
 ## Reference：
